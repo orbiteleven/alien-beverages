@@ -28,11 +28,10 @@ curl http://localhost:8000/health
 ## Data & the loader
 
 Recipe cards live in `data/recipes/` as markdown files with YAML
-frontmatter — the house menu of a spaceport bar. The directory is empty for
-now — you'll receive the dataset at the start of the exercise; drop the
-files in and restart. `backend/src/loader.ts` reads them at startup;
-they're available on the Fastify instance as `app.recipes`. Each record is
-an object with:
+frontmatter — the house menu of a spaceport bar. There are 40 cards in the
+directory; drop more in and restart to pick them up.
+`backend/src/loader.ts` reads them at startup; they're available on the
+Fastify instance as `app.recipes`. Each record is an object with:
 
 - every key from the file's YAML frontmatter, parsed as-is
 - `body` — the raw markdown body below the frontmatter, as a single string
@@ -41,6 +40,14 @@ an object with:
 
 The loader is intentionally naive: it handles well-formed files and skips
 anything that fails to parse with a logged warning. Extend it as needed.
+
+Two things the cards will catch you on. The frontmatter is not uniform —
+`hazard-pay.md` uses `spirit` instead of `base_spirit`, `overtime.md` uses
+`time_minutes` instead of `prep_minutes`, and two cards have no
+`flavor_profile` at all — so read fields through an alias rather than
+assuming a key exists. And `pressure-test.md` has an unclosed quote in its
+frontmatter, so the loader skips it and only **39** of the 40 cards
+actually load; watch the startup log line for the count.
 
 ## LLM client
 
@@ -87,10 +94,38 @@ vi.mock("../src/llm.js", () => ({
 The client's own tests (`backend/test/llm.test.ts`) stub the global `fetch`
 with `vi.stubGlobal` to check the wire format and error handling.
 
-## Where to work
+## Recommendations
 
-- `backend/src/matching.ts` — search/matching logic (empty, TODO)
-- `backend/src/app.ts` — `POST /recommendations` currently returns `[]`
+`POST /recommendations` asks the model to pick from the house menu. It never
+invents a drink: the prompt says so, and `resolvePicks` enforces it by
+discarding anything whose `source_file` isn't a card we actually loaded.
+
+```bash
+curl -s localhost:8000/recommendations \
+  -H 'Content-Type: application/json' \
+  -d '{"need":"something smoky and strong, I have had a long shift"}'
+```
+
+Request body is `{ "need": string }`, 1–2000 characters. Fastify's schema
+validation rejects anything outside that with a 400 before the model is
+called — 2000 characters is roughly 500 tokens, small next to the menu it
+shares the context window with.
+
+The response is a JSON array of **up to 3** recipes, best match first. Each
+element is the full loader record — every frontmatter key, plus `body` and
+`source_file` — with the model's one-line `reason` attached. An empty array
+means nothing fit, which is a valid answer.
+
+If the LLM call fails for any reason — no API key, a timeout, a rate limit,
+a reply that isn't JSON — the route returns **502** with a fixed message.
+The underlying error can quote the upstream response, so it goes to the log
+and never to the caller.
+
+`backend/src/matching.ts` owns both ends of this: `formatRecipesForPrompt`
+renders the menu (customer-facing frontmatter and the `## Description`
+paragraph, but not the `## Method` steps or `## Bartender's notes` — that
+keeps the prompt around 29KB instead of 63KB), and `resolvePicks` narrows
+the model's untrusted reply back into real records.
 
 ## Commands
 
