@@ -9,7 +9,11 @@ services:
       - ./data:/app/data
     environment:
       - RECIPES_DIR=data/recipes
+      # These arrive as empty strings when unset; llm.ts treats blank as unset.
       - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-}
 
   frontend:
     build: ./frontend
