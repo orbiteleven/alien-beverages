@@ -1,6 +1,15 @@
 import Fastify from "fastify";
 import { loadRecipes, type RecipeRecord } from "./loader.js";
 import { createLlmClient, type LlmClient } from "./llm.js";
+import { buildMessages, resolvePicks } from "./matching.js";
+
+/**
+ * Longest customer request we'll act on, in characters.
+ *
+ * Roughly 500 tokens — generous for describing a mood, and small next to the
+ * ~29KB menu that shares the context window with it.
+ */
+const MAX_NEED_LENGTH = 2000;
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -27,20 +36,41 @@ export function buildApp() {
 
   app.get("/health", async () => ({ status: "ok" }));
 
-  app.post(
+  app.post<{ Body: { need: string } }>(
     "/recommendations",
     {
       schema: {
         body: {
           type: "object",
           required: ["need"],
-          properties: { need: { type: "string" } },
+          properties: {
+            need: { type: "string", minLength: 1, maxLength: MAX_NEED_LENGTH },
+          },
         },
       },
     },
-    async () => {
-      // TODO: implement matching
-      return [];
+    async (request, reply) => {
+      const { recipes, llm } = request.server;
+
+      // Nothing to recommend from — don't spend a request finding that out.
+      if (recipes.length === 0) {
+        request.log.warn("No recipes loaded; returning no recommendations.");
+        return [];
+      }
+
+      try {
+        const raw = await llm.chatJson(buildMessages(request.body.need, recipes), {
+          temperature: 0.3,
+          maxTokens: 500,
+        });
+        return resolvePicks(recipes, raw);
+      } catch (err) {
+        // Everything llm.ts throws lands here: no API key, a non-2xx, a
+        // timeout, or a reply that wasn't JSON. Those messages can carry
+        // response fragments, so they're logged and never sent.
+        request.log.error({ err }, "Recommendation request failed");
+        return reply.code(502).send({ error: "Could not reach the recommendation service." });
+      }
     },
   );
 
